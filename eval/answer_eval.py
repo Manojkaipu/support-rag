@@ -19,6 +19,7 @@ Results go to results/answers.jsonl and a summary to results/answer_eval.md.
 import argparse
 import asyncio
 import json
+import time
 from collections import Counter
 from pathlib import Path
 
@@ -66,9 +67,15 @@ GRADE_SCHEMA = {
 
 
 async def run_one(agent: Agent, q: dict) -> dict:
-    retrieved, answer, usage, error = [], None, {}, None
+    retrieved, answer, usage, error, steps = [], None, {}, None, []
+    started = time.time()
     try:
         async for ev in agent.run(q["question"]):
+            if ev.type == "tool_call":
+                steps.append({"t": round(time.time() - started, 1), "tool": ev.data["name"],
+                              "input": ev.data["input"]})
+            elif ev.type == "verification":
+                steps.append({"t": round(time.time() - started, 1), "verified": ev.data["supported"]})
             if ev.type == "tool_result" and "hits" in ev.data:
                 retrieved += [h["conversation_id"] for h in ev.data["hits"]]
             elif ev.type == "tool_result" and "conversation_id" in ev.data:
@@ -83,7 +90,8 @@ async def run_one(agent: Agent, q: dict) -> dict:
         error = f"{type(e).__name__}: {e}"
     return {"id": q["id"], "question": q["question"], "company": q["company"], "type": q["type"],
             "answerable": q["answerable"], "gold": q["gold"], "reference_answer": q["reference_answer"],
-            "answer": answer, "retrieved": list(dict.fromkeys(retrieved)), "usage": usage, "error": error}
+            "answer": answer, "retrieved": list(dict.fromkeys(retrieved)), "usage": usage, "error": error,
+            "steps": steps, "started": started, "finished": time.time()}
 
 
 async def judge(agent: Agent, row: dict) -> tuple[dict, float]:
@@ -144,20 +152,29 @@ def summarize(rows: list[dict]) -> str:
 
 async def main_async(args):
     qs = [json.loads(line) for line in (EVAL / "questions.jsonl").read_text().splitlines()]
-    qs = [q for q in qs if q.get("review") != "rejected"][: args.limit or None]
+    if all(q.get("review", "pending") == "pending" for q in qs) and not args.allow_unreviewed:
+        raise SystemExit("no question in eval/questions.jsonl is reviewed; refusing to run "
+                         "(pass --allow-unreviewed to override)")
+    qs = [q for q in qs if q.get("review") != "rejected"]
+    if args.ids:
+        qs = [q for q in qs if q["id"] in set(args.ids.split(","))]
+    qs = qs[: args.limit or None]
     engine, sessionmaker = make_db()
     agent = Agent(await asyncio.to_thread(Retriever), sessionmaker)
     OUT.mkdir(exist_ok=True)
-    path = OUT / "answers.jsonl"
+    path = OUT / f"{args.out}.jsonl"
     done = {json.loads(line)["id"] for line in path.read_text().splitlines()} if path.exists() and args.resume else set()
     sem = asyncio.Semaphore(args.concurrency)
 
     async def one(q):
         async with sem:
             row = await run_one(agent, q)
+            t = time.time()
             row["grade"], row["judge_cost"] = await judge(agent, row)
-            print(f"{q['id']} {row['grade']['failure_mode']:22s} ${row['usage'].get('cost_usd', 0):.3f} "
-                  f"{row['usage'].get('latency_s', 0):5.1f}s", flush=True)
+            row["judge_s"] = round(time.time() - t, 1)
+            print(f"{time.strftime('%H:%M:%S')} {q['id']} {row['grade']['failure_mode']:22s} "
+                  f"${row['usage'].get('cost_usd', 0):.3f} agent {row['usage'].get('latency_s', 0):5.1f}s "
+                  f"judge {row['judge_s']:5.1f}s calls {row['usage'].get('model_calls', 0)}", flush=True)
             return row
 
     rows = []
@@ -170,7 +187,7 @@ async def main_async(args):
             rows.append(row)
     all_rows = [json.loads(line) for line in path.read_text().splitlines()]
     summary = summarize(sorted(all_rows, key=lambda r: r["id"]))
-    (OUT / "answer_eval.md").write_text(summary)
+    (OUT / f"{args.out}.md").write_text(summary)
     print(summary)
     await engine.dispose()
 
@@ -178,6 +195,9 @@ async def main_async(args):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--ids", default="", help="comma-separated question ids, e.g. q001,q095")
+    ap.add_argument("--out", default="answers", help="results/<out>.jsonl and results/<out>.md")
+    ap.add_argument("--allow-unreviewed", action="store_true")
     ap.add_argument("--concurrency", type=int, default=4)
     ap.add_argument("--resume", action="store_true", help="skip questions already in results/answers.jsonl")
     asyncio.run(main_async(ap.parse_args()))

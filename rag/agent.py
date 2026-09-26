@@ -120,6 +120,9 @@ VERDICT_SCHEMA = {
     "additionalProperties": False,
 }
 
+LAST_TURN = ("You have one turn left. Call submit_answer now: give the best answer the conversations you "
+             "have read support, or answerable=false if they don't answer the question.")
+
 VERIFIER_PROMPT = """Check an answer against the support conversations it cites.
 
 A claim is supported only if a company agent in one of the cited conversations said it (or it's a \
@@ -235,7 +238,9 @@ class Agent:
             totals["cost_usd"] += turn.cost_usd
             totals["model_calls"] += 1
 
-        for _ in range(settings.max_agent_turns):
+        for turn_no in range(1, settings.max_agent_turns + 1):
+            if turn_no == settings.max_agent_turns and turn_no > 1:
+                self.llm.add_user_text(conv, LAST_TURN)  # end with an answer or an abstention, not a timeout
             turn = await self.step(conv, ctx)
             account(turn)
             if turn.stop_reason in ("refusal", "max_tokens"):

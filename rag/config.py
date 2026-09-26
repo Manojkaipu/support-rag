@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     judge_model: str | None = None
     agent_effort: str = "high"
     verifier_effort: str = "medium"
-    max_agent_turns: int = 8
+    max_agent_turns: int = 12  # the last turn is told to submit (see rag.agent.LAST_TURN)
     max_answer_retries: int = 2
 
     cors_origins: list[str] = ["http://localhost:3000"]

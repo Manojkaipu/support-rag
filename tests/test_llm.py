@@ -109,6 +109,20 @@ def test_xai_off_schema_verdict_is_not_trusted(make_agent):
     assert final["verified"] is False and final["verification"]["feedback"] == "the verifier returned no verdict"
 
 
+def test_last_turn_is_told_to_submit(make_agent, monkeypatch):
+    import rag.agent as agent_mod
+
+    monkeypatch.setattr(agent_mod.settings, "max_agent_turns", 3)
+    search = lambda cid: call(cid, "search_conversations", {"query": "q", "company": "any"})  # noqa: E731
+    client = FakeXai([resp("r1", search("c1")), resp("r2", search("c2")), resp("r3", submit("c3"))],
+                     [verdict(True)])
+    events = run(make_agent(client, XaiLLM))
+    agent_reqs = [r for r in client.requests if "tools" in r]
+    assert not any(i.get("content") == agent_mod.LAST_TURN for r in agent_reqs[:2] for i in r["input"])
+    assert agent_reqs[2]["input"][-1] == {"role": "user", "content": agent_mod.LAST_TURN}
+    assert [e for e in events if e.type == "answer"][0].data["verified"]
+
+
 def test_xai_incomplete_response_stops(make_agent):
     client = FakeXai([resp("r1", message("partial"), status="incomplete")])
     events = run(make_agent(client, XaiLLM))
