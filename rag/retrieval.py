@@ -50,7 +50,9 @@ def collapse(chunk_ids, chunk_conv, k):
 
 
 class Retriever:
-    def __init__(self, data_dir: Path | None = None, ef: int = 128, exact_below: int = 20_000):
+    # exact_below: with a company filter, scan the allowed chunks exactly when there are at most
+    # this many. bench/filter_bench.py puts the crossover with in-graph filtering near 5k chunks.
+    def __init__(self, data_dir: Path | None = None, ef: int = 128, exact_below: int = 5_000):
         from sentence_transformers import SentenceTransformer
 
         d = Path(data_dir or settings.data_dir)

@@ -8,6 +8,7 @@ Metrics are per question, at conversation level:
 
 Gold labels list the conversations the question was written from. Other
 conversations can answer the same question, so these numbers are lower bounds.
+Latency includes embedding the query (MiniLM on CPU).
 
     python eval/retrieval_eval.py
 """
@@ -28,6 +29,9 @@ def main():
     qs = [json.loads(line) for line in (EVAL / "questions.jsonl").read_text().splitlines()]
     qs = [q for q in qs if q["answerable"] and q.get("review") != "rejected"]
     r = Retriever()
+    for q in qs[:10]:  # warm-up: model, caches, page faults on the index
+        for mode in MODES:
+            r.search(q["question"], k=50, mode=mode)
     rows, per_q = [], []
     for filtered in (False, True):
         for mode in MODES:
