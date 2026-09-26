@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     agent_effort: str = "high"
     verifier_model: str = "claude-opus-5"
     verifier_effort: str = "medium"
+    judge_model: str = "claude-opus-5"
     max_agent_turns: int = 8
     max_answer_retries: int = 2
 
