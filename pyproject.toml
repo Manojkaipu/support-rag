@@ -12,6 +12,7 @@ dependencies = [
     "pydantic-settings>=2.2",
     "sentence-transformers>=3.0",
     "anthropic>=1.0",
+    "openai>=1.66",  # xAI's Responses API is used through the OpenAI SDK
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "prometheus-client>=0.20",

@@ -22,9 +22,7 @@ import json
 from collections import Counter
 from pathlib import Path
 
-import anthropic
-
-from rag.agent import Agent, cost_usd
+from rag.agent import Agent
 from rag.config import settings
 from rag.db.session import make_db
 from rag.retrieval import Retriever
@@ -81,7 +79,7 @@ async def run_one(agent: Agent, q: dict) -> dict:
                 usage = ev.data
             elif ev.type == "error":
                 error = ev.data["reason"]
-    except anthropic.APIError as e:
+    except Exception as e:  # one failed question (rate limit, network) shouldn't end the run
         error = f"{type(e).__name__}: {e}"
     return {"id": q["id"], "question": q["question"], "company": q["company"], "type": q["type"],
             "answerable": q["answerable"], "gold": q["gold"], "reference_answer": q["reference_answer"],
@@ -102,20 +100,16 @@ async def judge(agent: Agent, row: dict) -> tuple[dict, float]:
     prompt = (f"Question: {row['question']}\nAnswerable from the history: {row['answerable']}\n"
               f"Reference answer: {row['reference_answer']}\n\nSystem answer:\n{a['answer']}\n\n"
               "Cited conversations:\n\n" + ("\n\n---\n\n".join(docs) or "(none)"))
-    resp = await agent.client.messages.create(
-        model=settings.judge_model, max_tokens=4000, system=JUDGE_PROMPT,
-        messages=[{"role": "user", "content": prompt}],
-        output_config={"effort": "medium", "format": {"type": "json_schema", "schema": GRADE_SCHEMA}})
-    if resp.stop_reason == "refusal":
-        return {"grounded": False, "correct": False, "abstained": False, "failure_mode": "judge_refused",
-                "rationale": ""}, cost_usd(resp.model, resp.usage)
-    grade = json.loads(next(b.text for b in resp.content if b.type == "text"))
+    grade, turn = await agent.structured("judge", settings.judge_model, "medium", JUDGE_PROMPT, prompt, GRADE_SCHEMA)
+    if grade is None:
+        return {"grounded": False, "correct": False, "abstained": False, "failure_mode": "judge_error",
+                "rationale": f"no valid grade (stop: {turn.stop_reason})"}, turn.cost_usd
     # A failed answer whose gold conversation was never retrieved is a retrieval failure first,
     # whatever the answer then did. That's a fact about the run, so it overrides the judge.
     grade["judge_failure_mode"] = grade["failure_mode"]
     if row["answerable"] and grade["failure_mode"] != "none" and not set(row["gold"]) & set(row["retrieved"]):
         grade["failure_mode"] = "retrieval_miss"
-    return grade, cost_usd(resp.model, resp.usage)
+    return grade, turn.cost_usd
 
 
 def summarize(rows: list[dict]) -> str:

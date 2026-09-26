@@ -60,9 +60,11 @@ def record_llm_call(role: str, model: str, usage, cost: float, seconds: float, s
     LLM_COST.labels(model, role).inc(cost)
     LLM_SECONDS.labels(role).observe(seconds)
     if span is not None:
+        from rag.config import settings
+
         span.set_attributes({
-            "gen_ai.system": "anthropic", "gen_ai.response.model": model,
-            "gen_ai.usage.input_tokens": usage.input_tokens or 0,
+            "gen_ai.system": settings.llm_provider, "gen_ai.response.model": model,
+            "gen_ai.usage.input_tokens": (usage.input_tokens or 0) + (usage.cache_read_input_tokens or 0),
             "gen_ai.usage.output_tokens": usage.output_tokens or 0,
             "gen_ai.usage.cache_read_input_tokens": usage.cache_read_input_tokens or 0,
             "rag.cost_usd": cost,

@@ -6,6 +6,10 @@ call against the cited conversations; unsupported claims go back to the model
 as the submit_answer result and it revises (up to max_answer_retries times).
 Nothing reaches the user unverified without being flagged as such.
 
+The model provider (Anthropic or xAI) sits behind rag.llm. Tool inputs are
+validated here against their schemas, so a malformed call becomes an error
+result the model can correct instead of an exception.
+
 run() yields Event objects describing each step, which the API streams to the UI.
 """
 import asyncio
@@ -13,17 +17,16 @@ import json
 import time
 from dataclasses import asdict, dataclass, field
 
-import anthropic
 from opentelemetry import trace
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
-from rag.config import PRICES, settings
+from rag.config import settings
 from rag.db.models import Conversation
+from rag.llm import Turn, make_llm, validate
 from rag.observability import TOOL_CALLS, record_llm_call, tracer
 from rag.retrieval import Retriever
 
-BETAS = ["server-side-fallback-2026-07-01"]
 SEARCH_K = 8
 SNIPPET_CHARS = 700
 
@@ -67,8 +70,7 @@ def tools(companies: list[str]) -> list[dict]:
             "name": "search_conversations",
             "description": "Hybrid (BM25 + vector) search over support conversations. Returns up to "
                            f"{SEARCH_K} conversations with the best-matching snippet of each.",
-            "strict": True,
-            "input_schema": {
+            "schema": {
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "What to look for, in the customer's words."},
@@ -82,8 +84,7 @@ def tools(companies: list[str]) -> list[dict]:
         {
             "name": "get_conversation",
             "description": "Full text of one conversation, every turn with its timestamp.",
-            "strict": True,
-            "input_schema": {
+            "schema": {
                 "type": "object",
                 "properties": {"conversation_id": {"type": "integer"}},
                 "required": ["conversation_id"],
@@ -93,8 +94,7 @@ def tools(companies: list[str]) -> list[dict]:
         {
             "name": "submit_answer",
             "description": "Submit the final answer for verification.",
-            "strict": True,
-            "input_schema": {
+            "schema": {
                 "type": "object",
                 "properties": {
                     "answer": {"type": "string", "description": "Answer for the user, citing conversations as [#id]."},
@@ -128,21 +128,15 @@ The note that information is from 2017 needs no support. List each unsupported c
 say briefly how to fix the answer."""
 
 
-def cost_usd(model: str, usage) -> float:
-    p_in, p_out, p_read, p_write = PRICES.get(model, PRICES["claude-opus-5"])
-    return ((usage.input_tokens or 0) * p_in + (usage.output_tokens or 0) * p_out
-            + (usage.cache_read_input_tokens or 0) * p_read
-            + (usage.cache_creation_input_tokens or 0) * p_write) / 1e6
-
-
 class Agent:
-    def __init__(self, retriever: Retriever, sessionmaker, client: anthropic.AsyncAnthropic | None = None):
+    def __init__(self, retriever: Retriever, sessionmaker, llm=None):
         self.retriever = retriever
         self.sessionmaker = sessionmaker
-        self.client = client or anthropic.AsyncAnthropic()
         self.companies = sorted(retriever.company_id_by_handle)
         self.system = system_prompt(self.companies)
         self.tools = tools(self.companies)
+        self.schemas = {t["name"]: t["schema"] for t in self.tools}
+        self.llm = llm or make_llm(self.system, self.tools)
 
     # ---- tools -------------------------------------------------------------
 
@@ -167,18 +161,27 @@ class Agent:
 
     # ---- model calls -------------------------------------------------------
 
-    async def call(self, role, model, effort, ctx=None, **kwargs):
-        """One Messages API call, traced as llm.<role> (under ctx if given, else the current span)."""
-        with tracer.start_as_current_span(f"llm.{role}", context=ctx) as span:
+    async def step(self, conv, ctx) -> Turn:
+        """One agent turn, traced as llm.agent under the run's root span."""
+        with tracer.start_as_current_span("llm.agent", context=ctx) as span:
+            span.set_attributes({"gen_ai.request.model": settings.agent_model, "rag.effort": settings.agent_effort})
+            t = time.perf_counter()
+            turn = await self.llm.step(conv, settings.agent_model, settings.agent_effort)
+            span.set_attribute("gen_ai.response.stop_reason", turn.stop_reason)
+            record_llm_call("agent", turn.model, turn.usage, turn.cost_usd, time.perf_counter() - t, span)
+            return turn
+
+    async def structured(self, role, model, effort, system, prompt, schema):
+        """A schema-constrained call (verifier, judge), traced as llm.<role> under the current span.
+        Returns (data or None, Turn); data is None when the reply is missing or off-schema."""
+        with tracer.start_as_current_span(f"llm.{role}") as span:
             span.set_attributes({"gen_ai.request.model": model, "rag.effort": effort})
             t = time.perf_counter()
-            resp = await self.client.beta.messages.create(
-                model=model, max_tokens=16000, betas=BETAS, fallbacks="default",
-                output_config={"effort": effort, **kwargs.pop("output_config", {})}, **kwargs)
-            span.set_attribute("gen_ai.response.stop_reason", resp.stop_reason or "")
-            record_llm_call(role, resp.model, resp.usage, cost_usd(resp.model, resp.usage),
-                            time.perf_counter() - t, span)
-            return resp
+            data, turn = await self.llm.structured(model, effort, system, prompt, schema)
+            record_llm_call(role, turn.model, turn.usage, turn.cost_usd, time.perf_counter() - t, span)
+            if data is not None and validate(data, schema):
+                data = None
+            return data, turn
 
     async def verify(self, question: str, answer: str, cited: list[int]):
         docs = []
@@ -189,20 +192,19 @@ class Agent:
                 docs.append(f"Conversation #{cid} doesn't exist.")
         prompt = (f"Question: {question}\n\nAnswer to check:\n{answer}\n\nCited conversations:\n\n"
                   + "\n\n---\n\n".join(docs or ["(none cited)"]))
-        resp = await self.call("verifier", settings.verifier_model, settings.verifier_effort, system=VERIFIER_PROMPT,
-                               messages=[{"role": "user", "content": prompt}],
-                               output_config={"format": {"type": "json_schema", "schema": VERDICT_SCHEMA}})
-        if resp.stop_reason == "refusal":
-            return {"supported": False, "unsupported_claims": [], "feedback": "verifier declined"}, resp
-        text = next(b.text for b in resp.content if b.type == "text")
-        return json.loads(text), resp
+        verdict, turn = await self.structured("verifier", settings.verifier_model, settings.verifier_effort,
+                                              VERIFIER_PROMPT, prompt, VERDICT_SCHEMA)
+        if verdict is None:
+            verdict = {"supported": False, "unsupported_claims": [], "feedback": "the verifier returned no verdict"}
+        return verdict, turn
 
     # ---- loop --------------------------------------------------------------
 
     async def run(self, question: str):
         # This is an async generator: a span kept "current" across yields would leak into the
         # caller's context, so the root span is passed explicitly to everything below it.
-        root = tracer.start_span("agent.run", attributes={"rag.question": question[:500]})
+        root = tracer.start_span("agent.run", attributes={"rag.question": question[:500],
+                                                          "rag.provider": settings.llm_provider})
         ctx = trace.set_span_in_context(root)
         try:
             async for ev in self._run(question, ctx):
@@ -218,71 +220,65 @@ class Agent:
             root.end()
 
     async def _run(self, question: str, ctx):
-        messages = [{"role": "user", "content": question}]
+        conv = self.llm.start(question)
         totals = {"input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0, "cache_write_tokens": 0,
                   "cost_usd": 0.0, "model_calls": 0}
         retries = 0
         t0 = time.perf_counter()
 
-        def account(resp):
-            u = resp.usage
-            totals["input_tokens"] += u.input_tokens or 0
-            totals["output_tokens"] += u.output_tokens or 0
-            totals["cache_read_tokens"] += u.cache_read_input_tokens or 0
-            totals["cache_write_tokens"] += u.cache_creation_input_tokens or 0
-            totals["cost_usd"] += cost_usd(resp.model, u)
+        def account(turn: Turn):
+            u = turn.usage
+            totals["input_tokens"] += u.input_tokens
+            totals["output_tokens"] += u.output_tokens
+            totals["cache_read_tokens"] += u.cache_read_input_tokens
+            totals["cache_write_tokens"] += u.cache_creation_input_tokens
+            totals["cost_usd"] += turn.cost_usd
             totals["model_calls"] += 1
 
         for _ in range(settings.max_agent_turns):
-            resp = await self.call("agent", settings.agent_model, settings.agent_effort, ctx,
-                                   system=self.system, tools=self.tools, messages=messages,
-                                   thinking={"type": "adaptive", "display": "summarized"},
-                                   cache_control={"type": "ephemeral"})
-            account(resp)
-            if resp.stop_reason in ("refusal", "max_tokens"):
-                yield Event("error", {"reason": resp.stop_reason})
+            turn = await self.step(conv, ctx)
+            account(turn)
+            if turn.stop_reason in ("refusal", "max_tokens"):
+                yield Event("error", {"reason": turn.stop_reason})
                 break
-            for b in resp.content:
-                if b.type == "thinking" and b.thinking:
-                    yield Event("thinking", {"text": b.thinking})
-                elif b.type == "text" and b.text.strip():
-                    yield Event("text", {"text": b.text})
-            messages.append({"role": "assistant", "content": resp.content})
+            for text in turn.thinking:
+                yield Event("thinking", {"text": text})
+            for text in turn.text:
+                yield Event("text", {"text": text})
 
-            calls = [b for b in resp.content if b.type == "tool_use"]
+            calls = turn.tool_calls
             if not calls:  # the model stopped without submitting; ask it to submit
-                messages.append({"role": "user", "content": "Please call submit_answer with your final answer."})
+                self.llm.add_user_text(conv, "Please call submit_answer with your final answer.")
                 continue
 
             results, final = [], None
             for c in calls:
-                yield Event("tool_call", {"id": c.id, "name": c.name, "input": c.input})
+                yield Event("tool_call", {"id": c.id, "name": c.name,
+                                          "input": c.input if c.input is not None else {"raw": c.raw}})
             outputs = await asyncio.gather(*(self.execute(c, question, ctx) for c in calls), return_exceptions=True)
             for c, out in zip(calls, outputs):
                 if isinstance(out, Exception):
-                    results.append({"type": "tool_result", "tool_use_id": c.id, "content": f"Error: {out}",
-                                    "is_error": True})
+                    results.append((c.id, f"Error: {out}", True))
                     yield Event("tool_result", {"id": c.id, "name": c.name, "error": str(out)})
                     continue
-                text, info, verdict_resp = out
-                if verdict_resp is not None:
-                    account(verdict_resp)
+                text, info, verdict_turn = out
+                if verdict_turn is not None:
+                    account(verdict_turn)
                 if c.name != "submit_answer":
-                    results.append({"type": "tool_result", "tool_use_id": c.id, "content": text})
+                    results.append((c.id, text, False))
                     yield Event("tool_result", {"id": c.id, "name": c.name, **info})
                     continue
                 verdict = info["verdict"]
                 yield Event("verification", {"attempt": retries + 1, **verdict})
                 if verdict["supported"] or retries >= settings.max_answer_retries:
                     final = {**c.input, "verified": verdict["supported"], "verification": verdict}
-                    results.append({"type": "tool_result", "tool_use_id": c.id, "content": "Accepted."})
+                    results.append((c.id, "Accepted.", False))
                 else:
                     retries += 1
-                    results.append({"type": "tool_result", "tool_use_id": c.id, "is_error": True,
-                                    "content": "Verification failed. Unsupported claims: "
-                                               + json.dumps(verdict["unsupported_claims"])
-                                               + f"\nFeedback: {verdict['feedback']}\nRevise and submit again."})
-            messages.append({"role": "user", "content": results})
+                    results.append((c.id, "Verification failed. Unsupported claims: "
+                                    + json.dumps(verdict["unsupported_claims"])
+                                    + f"\nFeedback: {verdict['feedback']}\nRevise and submit again.", True))
+            self.llm.add_tool_results(conv, results)
             if final:
                 yield Event("answer", final)
                 break
@@ -292,9 +288,9 @@ class Agent:
 
     async def execute(self, call, question, ctx=None):
         """Runs one tool call in a tool.<name> span. Returns (tool_result text, event info,
-        verifier response or None)."""
+        verifier Turn or None). Raises on bad input; the loop turns that into an error result."""
         with tracer.start_as_current_span(f"tool.{call.name}", context=ctx) as span:
-            span.set_attribute("rag.tool_input", json.dumps(call.input)[:500])
+            span.set_attribute("rag.tool_input", (json.dumps(call.input) if call.input is not None else call.raw)[:500])
             try:
                 out = await self._execute(call, question)
             except Exception as e:
@@ -306,16 +302,23 @@ class Agent:
             return out
 
     async def _execute(self, call, question):
+        schema = self.schemas.get(call.name)
+        if schema is None:
+            raise ValueError(f"unknown tool {call.name}")
+        if call.input is None:
+            raise ValueError("the arguments were not valid JSON")
+        errors = validate(call.input, schema)
+        if errors:
+            raise ValueError("invalid arguments: " + "; ".join(errors))
         if call.name == "search_conversations":
             text, rows = await self.search(call.input["query"], call.input["company"])
             return text, {"hits": rows}, None
         if call.name == "get_conversation":
             text, info = await self.get_conversation(call.input["conversation_id"])
             return text, info, None
-        if call.name == "submit_answer":
-            if not call.input["answerable"] and not call.input["cited_conversation_ids"]:
-                verdict = {"supported": True, "unsupported_claims": [], "feedback": "no-answer response"}
-                return "", {"verdict": verdict}, None
-            verdict, resp = await self.verify(question, call.input["answer"], call.input["cited_conversation_ids"])
-            return "", {"verdict": verdict}, resp
-        raise ValueError(f"unknown tool {call.name}")
+        # submit_answer
+        if not call.input["answerable"] and not call.input["cited_conversation_ids"]:
+            verdict = {"supported": True, "unsupported_claims": [], "feedback": "no-answer response"}
+            return "", {"verdict": verdict}, None
+        verdict, turn = await self.verify(question, call.input["answer"], call.input["cited_conversation_ids"])
+        return "", {"verdict": verdict}, turn

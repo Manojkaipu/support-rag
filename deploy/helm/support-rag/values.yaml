@@ -7,10 +7,12 @@ images:
 data:
   hostPath: /data
 
-anthropic:
-  existingSecret: anthropic  # kubectl create secret generic anthropic --from-literal=ANTHROPIC_API_KEY=...
-  agentModel: claude-opus-5
-  verifierModel: claude-opus-5
+llm:
+  provider: xai  # xai | anthropic
+  # kubectl create secret generic llm-keys --from-literal=XAI_API_KEY=...  (and/or ANTHROPIC_API_KEY)
+  existingSecret: llm-keys
+  agentModel: ""  # empty: the provider's default (grok-4.7 / claude-opus-5)
+  verifierModel: ""
 
 postgres:
   image: postgres:18

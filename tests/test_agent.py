@@ -7,7 +7,8 @@ from types import SimpleNamespace as NS
 import pytest
 
 import rag.agent as agent_mod
-from rag.agent import Agent
+from rag.agent import Agent, system_prompt, tools
+from rag.llm import AnthropicLLM
 from rag.retrieval import Hit
 
 
@@ -66,10 +67,15 @@ def run(agent, q="How long is my Delta account locked?"):
     return asyncio.run(collect())
 
 
+def fake_llm_for(client_cls_llm, client):
+    companies = sorted(FakeRetriever.company_id_by_handle)
+    return client_cls_llm(system_prompt(companies), tools(companies), client=client)
+
+
 @pytest.fixture
 def make_agent(monkeypatch):
-    def make(client):
-        a = Agent(FakeRetriever(), sessionmaker=None, client=client)
+    def make(client, llm_cls=AnthropicLLM):
+        a = Agent(FakeRetriever(), sessionmaker=None, llm=fake_llm_for(llm_cls, client))
 
         async def fake_get(cid):
             if cid != 317108:
@@ -105,7 +111,7 @@ def test_happy_path(make_agent):
     assert "317108" in second[-1]["content"][0]["content"]
     # every agent request carries the refusal-fallback opt-in and a stable prefix
     agent_reqs = [r for r in client.requests if "tools" in r]
-    assert all(r["fallbacks"] == "default" and r["betas"] == agent_mod.BETAS for r in agent_reqs)
+    assert all(r["fallbacks"] == "default" and r["betas"] == AnthropicLLM.BETAS for r in agent_reqs)
     assert agent_reqs[0]["system"] == agent_reqs[1]["system"] and agent_reqs[0]["tools"] == agent_reqs[1]["tools"]
 
 

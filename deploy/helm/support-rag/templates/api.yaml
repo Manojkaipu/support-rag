@@ -28,13 +28,21 @@ spec:
           imagePullPolicy: {{ .Values.images.pullPolicy }}
           env:
             {{- include "rag.dbEnv" . | nindent 12 }}
-            - name: ANTHROPIC_API_KEY
+            - name: LLM_PROVIDER
+              value: {{ .Values.llm.provider }}
+            {{- range list "XAI_API_KEY" "ANTHROPIC_API_KEY" }}
+            - name: {{ . }}
               valueFrom:
-                secretKeyRef: { name: {{ .Values.anthropic.existingSecret }}, key: ANTHROPIC_API_KEY, optional: true }
+                secretKeyRef: { name: {{ $.Values.llm.existingSecret }}, key: {{ . }}, optional: true }
+            {{- end }}
+            {{- with .Values.llm.agentModel }}
             - name: AGENT_MODEL
-              value: {{ .Values.anthropic.agentModel }}
+              value: {{ . }}
+            {{- end }}
+            {{- with .Values.llm.verifierModel }}
             - name: VERIFIER_MODEL
-              value: {{ .Values.anthropic.verifierModel }}
+              value: {{ . }}
+            {{- end }}
             {{- if .Values.observability.enabled }}
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: http://jaeger:4318
