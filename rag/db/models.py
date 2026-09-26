@@ -1,8 +1,10 @@
 """Corpus tables. Conversation and chunk ids are dense (0..n-1) because they
 double as row ids in the vector and BM25 indexes."""
+import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, SmallInteger, String, Text
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, SmallInteger, String, Text, func
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -55,3 +57,33 @@ class Chunk(Base):
     turn_start: Mapped[int] = mapped_column(SmallInteger)
     turn_end: Mapped[int] = mapped_column(SmallInteger)  # inclusive
     text: Mapped[str] = mapped_column(Text)
+
+
+CORPUS_TABLES = [Company.__table__, Conversation.__table__, Tweet.__table__, Chunk.__table__]
+
+
+class Run(Base):
+    """One question answered by the agent."""
+    __tablename__ = "runs"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    question: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(16), default="running")  # running | answered | failed
+    answer: Mapped[str | None] = mapped_column(Text)
+    answerable: Mapped[bool | None] = mapped_column(Boolean)
+    verified: Mapped[bool | None] = mapped_column(Boolean)
+    cited_conversation_ids: Mapped[list | None] = mapped_column(JSONB)
+    cost_usd: Mapped[float | None] = mapped_column(Float)
+    latency_s: Mapped[float | None] = mapped_column(Float)
+
+    events: Mapped[list["RunEvent"]] = relationship(order_by="RunEvent.seq", cascade="all, delete-orphan")
+
+
+class RunEvent(Base):
+    __tablename__ = "run_events"
+
+    run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"), primary_key=True)
+    seq: Mapped[int] = mapped_column(Integer, primary_key=True)
+    type: Mapped[str] = mapped_column(String(16))
+    data: Mapped[dict] = mapped_column(JSONB)

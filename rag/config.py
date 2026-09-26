@@ -25,5 +25,7 @@ class Settings(BaseSettings):
     max_agent_turns: int = 8
     max_answer_retries: int = 2
 
+    cors_origins: list[str] = ["http://localhost:3000"]
+
 
 settings = Settings()

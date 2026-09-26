@@ -19,7 +19,7 @@ import pandas as pd
 from sqlalchemy import create_engine
 
 from rag.config import settings
-from rag.db.models import Base
+from rag.db.models import CORPUS_TABLES, Base
 
 BUDGET = 240       # tokens per chunk, leaving room for [CLS]/[SEP]
 HEAD_TOKENS = 64   # opening message budget in continuation chunks
@@ -185,7 +185,7 @@ def copy_frame(cur, table, frame):
 def load_db(companies, conversations, tweets, chunks):
     t0 = time.time()
     engine = create_engine(settings.database_url)
-    Base.metadata.drop_all(engine)
+    Base.metadata.drop_all(engine, tables=CORPUS_TABLES)  # leaves run history alone
     Base.metadata.create_all(engine)
     raw = engine.raw_connection()
     try:
