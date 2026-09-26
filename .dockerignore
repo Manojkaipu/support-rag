@@ -2,6 +2,7 @@ data
 results
 web
 deploy
+vecsearch-src
 .venv
 .git
 .env
