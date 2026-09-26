@@ -1,0 +1,93 @@
+{
+  "uid": "support-rag",
+  "title": "support-rag",
+  "schemaVersion": 39,
+  "version": 1,
+  "time": { "from": "now-6h", "to": "now" },
+  "refresh": "30s",
+  "tags": ["rag"],
+  "panels": [
+    {
+      "id": 1, "type": "timeseries", "title": "Questions per minute by outcome",
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "sum by (outcome) (rate(rag_answers_total[5m])) * 60", "legendFormat": "{{outcome}}" }],
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "stacking": { "mode": "normal" }, "fillOpacity": 30 } } }
+    },
+    {
+      "id": 2, "type": "stat", "title": "Verified share of answered questions (1h)",
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "sum(increase(rag_answers_total{outcome=\"verified\"}[1h])) / sum(increase(rag_answers_total{outcome=~\"verified|unverified\"}[1h]))" }],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "decimals": 1 } }
+    },
+    {
+      "id": 3, "type": "stat", "title": "Retrieval hit rate (1h)",
+      "description": "Share of searches that returned at least one conversation the accepted answer cited.",
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "sum(increase(rag_searches_useful_total[1h])) / sum(increase(rag_searches_total[1h]))" }],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "decimals": 1 } }
+    },
+    {
+      "id": 4, "type": "stat", "title": "Cost per answered question (1h)",
+      "gridPos": { "x": 12, "y": 4, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "sum(increase(rag_llm_cost_usd_total[1h])) / sum(increase(rag_answers_total{outcome!=\"failed\"}[1h]))" }],
+      "fieldConfig": { "defaults": { "unit": "currencyUSD", "decimals": 3 } }
+    },
+    {
+      "id": 5, "type": "stat", "title": "Prompt cache hit ratio (1h)",
+      "description": "Cached input tokens / all input tokens.",
+      "gridPos": { "x": 18, "y": 4, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "sum(increase(rag_llm_tokens_total{kind=\"cache_read\"}[1h])) / sum(increase(rag_llm_tokens_total{kind=~\"input|cache_read|cache_write\"}[1h]))" }],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "decimals": 1 } }
+    },
+    {
+      "id": 6, "type": "timeseries", "title": "End-to-end latency",
+      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "histogram_quantile(0.5, sum by (le) (rate(rag_ask_seconds_bucket[10m])))", "legendFormat": "p50" },
+        { "expr": "histogram_quantile(0.95, sum by (le) (rate(rag_ask_seconds_bucket[10m])))", "legendFormat": "p95" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "id": 7, "type": "timeseries", "title": "Model call latency p95 by role",
+      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "histogram_quantile(0.95, sum by (le, role) (rate(rag_llm_call_seconds_bucket[10m])))", "legendFormat": "{{role}}" }],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "id": 8, "type": "timeseries", "title": "Spend (USD per hour) by role",
+      "gridPos": { "x": 0, "y": 16, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "sum by (role) (rate(rag_llm_cost_usd_total[10m])) * 3600", "legendFormat": "{{role}}" }],
+      "fieldConfig": { "defaults": { "unit": "currencyUSD", "custom": { "stacking": { "mode": "normal" }, "fillOpacity": 30 } } }
+    },
+    {
+      "id": 9, "type": "timeseries", "title": "Tokens per minute by kind",
+      "gridPos": { "x": 12, "y": 16, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "sum by (kind) (rate(rag_llm_tokens_total[10m])) * 60", "legendFormat": "{{kind}}" }],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+    {
+      "id": 10, "type": "timeseries", "title": "Retrieval stage latency p95",
+      "gridPos": { "x": 0, "y": 24, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "histogram_quantile(0.95, sum by (le, stage) (rate(rag_retrieval_seconds_bucket[10m])))", "legendFormat": "{{stage}}" }],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "id": 11, "type": "timeseries", "title": "Tool calls per minute",
+      "gridPos": { "x": 12, "y": 24, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "sum by (tool, status) (rate(rag_tool_calls_total[10m])) * 60", "legendFormat": "{{tool}} {{status}}" }],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    }
+  ]
+}

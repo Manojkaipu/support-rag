@@ -12,6 +12,17 @@ import pandas as pd
 
 import vecsearch as vs
 from rag.config import settings
+from rag.observability import RETRIEVAL_SECONDS, tracer
+
+
+def timed_stage(stage):
+    """Span + latency histogram around one retrieval stage."""
+    def wrap(fn):
+        def inner(*a, **kw):
+            with tracer.start_as_current_span(f"retrieval.{stage}"), RETRIEVAL_SECONDS.labels(stage).time():
+                return fn(*a, **kw)
+        return inner
+    return wrap
 
 MODES = ("vector", "bm25", "hybrid")
 
@@ -73,6 +84,7 @@ class Retriever:
     def embed(self, text: str) -> np.ndarray:
         return self.model.encode([text], normalize_embeddings=True, convert_to_numpy=True)
 
+    @timed_stage("vector")
     def vector(self, query, k, mask=None, pool=100):
         ids, dist = self.hnsw.search(self.embed(query), k=pool, ef=max(self.ef, pool),
                                      filter=mask, exact_below=self.exact_below)
@@ -80,6 +92,7 @@ class Retriever:
         score = {int(c): 1.0 - float(d) for c, d in zip(ids[0], dist[0]) if c >= 0}
         return [Hit(conv, ch, score[ch]) for conv, ch in convs]
 
+    @timed_stage("bm25")
     def lexical(self, query, k, mask=None, pool=100):
         ids, scores = self.bm25.search(query, k=pool, filter=mask)
         convs = collapse(ids[0], self.chunk_conv, k)
@@ -88,14 +101,23 @@ class Retriever:
 
     def search(self, query: str, k: int = 10, mode: str = "hybrid", company: str | None = None,
                pool: int = 100) -> list[Hit]:
-        mask = self.company_mask(company)
-        if mode == "vector":
-            return self.vector(query, k, mask, pool)
-        if mode == "bm25":
-            return self.lexical(query, k, mask, pool)
-        if mode != "hybrid":
+        if mode not in MODES:
             raise ValueError(f"mode must be one of {MODES}")
-        v, b = self.vector(query, pool, mask, pool), self.lexical(query, pool, mask, pool)
+        with tracer.start_as_current_span("retrieval.search") as span:
+            span.set_attributes({"rag.mode": mode, "rag.company": company or "any", "rag.k": k})
+            mask = self.company_mask(company)
+            if mode == "vector":
+                hits = self.vector(query, k, mask, pool)
+            elif mode == "bm25":
+                hits = self.lexical(query, k, mask, pool)
+            else:
+                v, b = self.vector(query, pool, mask, pool), self.lexical(query, pool, mask, pool)
+                hits = self.fuse(v, b, k)
+            span.set_attribute("rag.hits", len(hits))
+            return hits
+
+    @timed_stage("fuse")
+    def fuse(self, v, b, k):
         best_chunk = {h.conversation_id: h.chunk_id for h in b}
         best_chunk.update({h.conversation_id: h.chunk_id for h in v})  # prefer the semantic match
         ids, scores = vs.rrf([[h.conversation_id for h in v], [h.conversation_id for h in b]], k=k)

@@ -4,12 +4,16 @@
 """
 import asyncio
 import json
+import time
 import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
+from prometheus_client import make_asgi_app
 from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
@@ -17,6 +21,7 @@ from rag.api.schemas import AskRequest, ConversationOut, RunOut, RunSummary, Sea
 from rag.config import settings
 from rag.db.models import Base, Company, Conversation, Run, RunEvent
 from rag.db.session import make_db
+from rag.observability import record_run, setup_tracing
 from rag.retrieval import MODES
 
 
@@ -30,6 +35,7 @@ def create_app(retriever=None, agent=None, database_url: str | None = None) -> F
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         engine, sessionmaker = make_db(database_url)
+        SQLAlchemyInstrumentor().instrument(engine=engine.sync_engine)
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         r = retriever
@@ -47,6 +53,8 @@ def create_app(retriever=None, agent=None, database_url: str | None = None) -> F
     app = FastAPI(title="support-rag", lifespan=lifespan)
     app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_methods=["*"],
                        allow_headers=["*"])
+    app.mount("/metrics", make_asgi_app())
+    FastAPIInstrumentor.instrument_app(app, excluded_urls="healthz,metrics")
 
     @app.get("/healthz")
     async def healthz():
@@ -92,6 +100,7 @@ def create_app(retriever=None, agent=None, database_url: str | None = None) -> F
 
         async def stream():
             events, final, usage = [], None, {}
+            t0 = time.perf_counter()
             yield sse("run", {"run_id": str(run.id)})
             try:
                 async for ev in state.agent.run(body.question):
@@ -103,6 +112,7 @@ def create_app(retriever=None, agent=None, database_url: str | None = None) -> F
                     yield sse(ev.type, ev.data)
             finally:
                 # also runs when the client disconnects and the stream is cancelled
+                record_run(events, time.perf_counter() - t0)
                 await asyncio.shield(save(state.sessionmaker, run.id, events, final, usage))
 
         return StreamingResponse(stream(), media_type="text/event-stream",
@@ -145,4 +155,5 @@ async def save(sessionmaker, run_id, events, final, usage):
         await s.commit()
 
 
+setup_tracing()
 app = create_app()

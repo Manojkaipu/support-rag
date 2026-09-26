@@ -14,11 +14,13 @@ import time
 from dataclasses import asdict, dataclass, field
 
 import anthropic
+from opentelemetry import trace
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from rag.config import PRICES, settings
 from rag.db.models import Conversation
+from rag.observability import TOOL_CALLS, record_llm_call, tracer
 from rag.retrieval import Retriever
 
 BETAS = ["server-side-fallback-2026-07-01"]
@@ -165,10 +167,18 @@ class Agent:
 
     # ---- model calls -------------------------------------------------------
 
-    async def call(self, model, effort, **kwargs):
-        return await self.client.beta.messages.create(
-            model=model, max_tokens=16000, betas=BETAS, fallbacks="default",
-            output_config={"effort": effort, **kwargs.pop("output_config", {})}, **kwargs)
+    async def call(self, role, model, effort, ctx=None, **kwargs):
+        """One Messages API call, traced as llm.<role> (under ctx if given, else the current span)."""
+        with tracer.start_as_current_span(f"llm.{role}", context=ctx) as span:
+            span.set_attributes({"gen_ai.request.model": model, "rag.effort": effort})
+            t = time.perf_counter()
+            resp = await self.client.beta.messages.create(
+                model=model, max_tokens=16000, betas=BETAS, fallbacks="default",
+                output_config={"effort": effort, **kwargs.pop("output_config", {})}, **kwargs)
+            span.set_attribute("gen_ai.response.stop_reason", resp.stop_reason or "")
+            record_llm_call(role, resp.model, resp.usage, cost_usd(resp.model, resp.usage),
+                            time.perf_counter() - t, span)
+            return resp
 
     async def verify(self, question: str, answer: str, cited: list[int]):
         docs = []
@@ -179,7 +189,7 @@ class Agent:
                 docs.append(f"Conversation #{cid} doesn't exist.")
         prompt = (f"Question: {question}\n\nAnswer to check:\n{answer}\n\nCited conversations:\n\n"
                   + "\n\n---\n\n".join(docs or ["(none cited)"]))
-        resp = await self.call(settings.verifier_model, settings.verifier_effort, system=VERIFIER_PROMPT,
+        resp = await self.call("verifier", settings.verifier_model, settings.verifier_effort, system=VERIFIER_PROMPT,
                                messages=[{"role": "user", "content": prompt}],
                                output_config={"format": {"type": "json_schema", "schema": VERDICT_SCHEMA}})
         if resp.stop_reason == "refusal":
@@ -190,6 +200,24 @@ class Agent:
     # ---- loop --------------------------------------------------------------
 
     async def run(self, question: str):
+        # This is an async generator: a span kept "current" across yields would leak into the
+        # caller's context, so the root span is passed explicitly to everything below it.
+        root = tracer.start_span("agent.run", attributes={"rag.question": question[:500]})
+        ctx = trace.set_span_in_context(root)
+        try:
+            async for ev in self._run(question, ctx):
+                if ev.type == "answer":
+                    root.set_attributes({"rag.answerable": ev.data["answerable"], "rag.verified": ev.data["verified"],
+                                         "rag.cited": len(ev.data["cited_conversation_ids"])})
+                elif ev.type == "usage":
+                    root.set_attributes({"rag.cost_usd": ev.data["cost_usd"], "rag.model_calls": ev.data["model_calls"]})
+                elif ev.type == "error":
+                    root.set_status(trace.StatusCode.ERROR, ev.data["reason"])
+                yield ev
+        finally:
+            root.end()
+
+    async def _run(self, question: str, ctx):
         messages = [{"role": "user", "content": question}]
         totals = {"input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0, "cache_write_tokens": 0,
                   "cost_usd": 0.0, "model_calls": 0}
@@ -206,7 +234,7 @@ class Agent:
             totals["model_calls"] += 1
 
         for _ in range(settings.max_agent_turns):
-            resp = await self.call(settings.agent_model, settings.agent_effort,
+            resp = await self.call("agent", settings.agent_model, settings.agent_effort, ctx,
                                    system=self.system, tools=self.tools, messages=messages,
                                    thinking={"type": "adaptive", "display": "summarized"},
                                    cache_control={"type": "ephemeral"})
@@ -229,7 +257,7 @@ class Agent:
             results, final = [], None
             for c in calls:
                 yield Event("tool_call", {"id": c.id, "name": c.name, "input": c.input})
-            outputs = await asyncio.gather(*(self.execute(c, question) for c in calls), return_exceptions=True)
+            outputs = await asyncio.gather(*(self.execute(c, question, ctx) for c in calls), return_exceptions=True)
             for c, out in zip(calls, outputs):
                 if isinstance(out, Exception):
                     results.append({"type": "tool_result", "tool_use_id": c.id, "content": f"Error: {out}",
@@ -262,8 +290,22 @@ class Agent:
             yield Event("error", {"reason": "max_turns"})
         yield Event("usage", {**totals, "latency_s": round(time.perf_counter() - t0, 2)})
 
-    async def execute(self, call, question):
-        """Returns (tool_result text, event info, verifier response or None)."""
+    async def execute(self, call, question, ctx=None):
+        """Runs one tool call in a tool.<name> span. Returns (tool_result text, event info,
+        verifier response or None)."""
+        with tracer.start_as_current_span(f"tool.{call.name}", context=ctx) as span:
+            span.set_attribute("rag.tool_input", json.dumps(call.input)[:500])
+            try:
+                out = await self._execute(call, question)
+            except Exception as e:
+                TOOL_CALLS.labels(call.name, "error").inc()
+                span.record_exception(e)
+                span.set_status(trace.StatusCode.ERROR, str(e))
+                raise
+            TOOL_CALLS.labels(call.name, "ok").inc()
+            return out
+
+    async def _execute(self, call, question):
         if call.name == "search_conversations":
             text, rows = await self.search(call.input["query"], call.input["company"])
             return text, {"hits": rows}, None
