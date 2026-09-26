@@ -43,6 +43,14 @@ def main():
     if errors:
         raise SystemExit("\n".join(errors))
 
+    # Entries already reviewed in questions.jsonl are kept exactly as reviewed.
+    reviewed = {}
+    if (EVAL / "questions.jsonl").exists():
+        for line in (EVAL / "questions.jsonl").read_text(encoding="utf-8").splitlines():
+            r = json.loads(line)
+            if r.get("review", "pending") != "pending":
+                reviewed[r["id"]] = r
+
     bm25 = vs.BM25Index.load(str(DATA / "bm25.bin"))
     chunk_conv = np.load(DATA / "chunk_conversation.npy")
     out, sheet = [], ["# Evaluation set review", "",
@@ -50,7 +58,7 @@ def main():
                       "company said, and the gold conversations really answer it. Set `review` in questions.jsonl to "
                       "`approved`, `edited` (after fixing it) or `rejected`.", ""]
     for q in qs:
-        q = dict(q)
+        q = dict(reviewed.get(q["id"], q))
         q["gold_root_tweet_ids"] = [int(conv.at[g, "root_tweet_id"]) for g in q["gold"]]
         q.setdefault("review", "pending")
         out.append(q)
