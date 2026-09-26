@@ -4,6 +4,7 @@
 """
 import asyncio
 import json
+import logging
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -15,6 +16,7 @@ from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
 from prometheus_client import make_asgi_app
 from sqlalchemy import func, select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import selectinload
 
 from rag.api.schemas import AskRequest, ConversationOut, RunOut, RunSummary, SearchHit, TweetOut
@@ -25,8 +27,26 @@ from rag.observability import record_run, setup_tracing
 from rag.retrieval import MODES
 
 
+log = logging.getLogger("rag.api")
+
+
 def sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data, default=str)}\n\n"
+
+
+async def init_db(engine, attempts: int = 30, delay: float = 2.0):
+    """Creates missing tables, waiting for the database first: after a node restart the API can
+    start before Postgres (or cluster DNS) is reachable."""
+    for i in range(1, attempts + 1):
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            return
+        except OperationalError as e:
+            if i == attempts:
+                raise
+            log.warning("database not reachable (attempt %d/%d): %s", i, attempts, str(e).splitlines()[0])
+            await asyncio.sleep(delay)
 
 
 def create_app(retriever=None, agent=None, database_url: str | None = None) -> FastAPI:
@@ -36,8 +56,7 @@ def create_app(retriever=None, agent=None, database_url: str | None = None) -> F
     async def lifespan(app: FastAPI):
         engine, sessionmaker = make_db(database_url)
         SQLAlchemyInstrumentor().instrument(engine=engine.sync_engine)
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
+        await init_db(engine)
         r = retriever
         if r is None:
             from rag.retrieval import Retriever

@@ -109,6 +109,38 @@ def test_failed_run_is_recorded(seeded):
         assert run["status"] == "failed" and run["answer"] is None
 
 
+def test_init_db_waits_for_the_database(monkeypatch):
+    import asyncio
+
+    from sqlalchemy.exc import OperationalError
+
+    from rag.api import main
+
+    calls = []
+
+    class FlakyEngine:
+        def begin(self):
+            calls.append(1)
+            if len(calls) < 3:
+                raise OperationalError("connect", {}, Exception("failed to resolve host 'postgres'"))
+            return self
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def run_sync(self, fn):
+            pass
+
+    asyncio.run(main.init_db(FlakyEngine(), attempts=5, delay=0))
+    assert len(calls) == 3
+    calls.clear()
+    with pytest.raises(OperationalError):
+        asyncio.run(main.init_db(FlakyEngine(), attempts=2, delay=0))
+
+
 def test_validation(seeded):
     with client_for(FakeAgent()) as c:
         assert c.post("/api/ask", json={"question": "?"}).status_code == 422
