@@ -1,0 +1,60 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+  labels: {{- include "rag.labels" . | nindent 4 }}
+spec:
+  selector: {{- include "rag.selector" "api" | nindent 4 }}
+  ports:
+    - name: http
+      port: 8000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  labels: {{- include "rag.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.api.replicas }}
+  selector:
+    matchLabels: {{- include "rag.selector" "api" | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "rag.selector" "api" | nindent 8 }}
+    spec:
+      containers:
+        - name: api
+          image: {{ .Values.images.api }}
+          imagePullPolicy: {{ .Values.images.pullPolicy }}
+          env:
+            {{- include "rag.dbEnv" . | nindent 12 }}
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef: { name: {{ .Values.anthropic.existingSecret }}, key: ANTHROPIC_API_KEY, optional: true }
+            - name: AGENT_MODEL
+              value: {{ .Values.anthropic.agentModel }}
+            - name: VERIFIER_MODEL
+              value: {{ .Values.anthropic.verifierModel }}
+            {{- if .Values.observability.enabled }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://jaeger:4318
+            {{- end }}
+          ports:
+            - containerPort: 8000
+          startupProbe:  # loading the indexes and model takes a while
+            httpGet: { path: /healthz, port: 8000 }
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8000 }
+            periodSeconds: 10
+          resources: {{- toYaml .Values.api.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+              readOnly: true
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: rag-data
+            readOnly: true

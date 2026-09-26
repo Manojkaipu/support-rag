@@ -1,0 +1,6 @@
+apiVersion: v2
+name: support-rag
+description: Agentic Q&A over customer-support conversations (API, web UI, Postgres, observability)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

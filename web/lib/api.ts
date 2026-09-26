@@ -1,4 +1,5 @@
-export const API = process.env.NEXT_PUBLIC_API_URL ?? "";
+// Same-origin: app/api/[...path]/route.ts forwards to the backend.
+export const API = "";
 
 export type Hit = {
   conversation_id: number;

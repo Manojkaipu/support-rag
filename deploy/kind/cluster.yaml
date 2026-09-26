@@ -1,0 +1,16 @@
+# Single-node cluster. data/ is mounted into the node at /data, and NodePorts are
+# published on localhost: web 30080, Grafana 30300, Jaeger 30686, Prometheus 30900.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: support-rag
+nodes:
+  - role: control-plane
+    extraMounts:
+      - hostPath: /root/support-rag/data
+        containerPath: /data
+        readOnly: true
+    extraPortMappings:
+      - { containerPort: 30080, hostPort: 30080 }
+      - { containerPort: 30300, hostPort: 30300 }
+      - { containerPort: 30686, hostPort: 30686 }
+      - { containerPort: 30900, hostPort: 30900 }

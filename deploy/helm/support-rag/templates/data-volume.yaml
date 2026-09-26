@@ -1,0 +1,31 @@
+# The indexes (~2 GB) live on the node and are mounted read-only rather than baked into images.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: {{ .Release.Name }}-data
+  labels: {{- include "rag.labels" . | nindent 4 }}
+spec:
+  capacity:
+    storage: 10Gi
+  accessModes: ["ReadOnlyMany"]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  hostPath:
+    path: {{ .Values.data.hostPath }}
+    type: Directory
+  claimRef:
+    namespace: {{ .Release.Namespace }}
+    name: rag-data
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: rag-data
+  labels: {{- include "rag.labels" . | nindent 4 }}
+spec:
+  accessModes: ["ReadOnlyMany"]
+  storageClassName: ""
+  volumeName: {{ .Release.Name }}-data
+  resources:
+    requests:
+      storage: 10Gi

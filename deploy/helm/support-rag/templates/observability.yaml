@@ -1,0 +1,188 @@
+{{- if .Values.observability.enabled }}
+{{- $o := .Values.observability }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  labels: {{- include "rag.labels" . | nindent 4 }}
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+    scrape_configs:
+      - job_name: support-rag-api
+        static_configs:
+          - targets: ["api:8000"]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  labels: {{- include "rag.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {{- include "rag.selector" "prometheus" | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "rag.selector" "prometheus" | nindent 8 }}
+    spec:
+      containers:
+        - name: prometheus
+          image: {{ $o.prometheus.image }}
+          args: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=7d"]
+          ports:
+            - containerPort: 9090
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { memory: 1Gi }
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus
+      volumes:
+        - name: config
+          configMap:
+            name: prometheus-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  labels: {{- include "rag.labels" . | nindent 4 }}
+spec:
+  type: NodePort
+  selector: {{- include "rag.selector" "prometheus" | nindent 4 }}
+  ports:
+    - port: 9090
+      nodePort: {{ $o.prometheus.nodePort }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jaeger
+  labels: {{- include "rag.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {{- include "rag.selector" "jaeger" | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "rag.selector" "jaeger" | nindent 8 }}
+    spec:
+      containers:
+        - name: jaeger  # all-in-one: OTLP receiver, in-memory storage, UI
+          image: {{ $o.jaeger.image }}
+          ports:
+            - containerPort: 4318
+            - containerPort: 16686
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { memory: 1Gi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jaeger
+  labels: {{- include "rag.labels" . | nindent 4 }}
+spec:
+  type: NodePort
+  selector: {{- include "rag.selector" "jaeger" | nindent 4 }}
+  ports:
+    - name: otlp-http
+      port: 4318
+    - name: ui
+      port: 16686
+      nodePort: {{ $o.jaeger.nodePort }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-provisioning
+  labels: {{- include "rag.labels" . | nindent 4 }}
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        uid: prometheus
+        type: prometheus
+        url: http://prometheus:9090
+        isDefault: true
+      - name: Jaeger
+        uid: jaeger
+        type: jaeger
+        url: http://jaeger:16686
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+      - name: support-rag
+        type: file
+        options:
+          path: /var/lib/grafana/dashboards
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards
+  labels: {{- include "rag.labels" . | nindent 4 }}
+data:
+  support-rag.json: |-
+{{ .Files.Get "dashboards/support-rag.json" | indent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  labels: {{- include "rag.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {{- include "rag.selector" "grafana" | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "rag.selector" "grafana" | nindent 8 }}
+    spec:
+      containers:
+        - name: grafana
+          image: {{ $o.grafana.image }}
+          env:  # local cluster only: open dashboards without a login
+            - name: GF_AUTH_ANONYMOUS_ENABLED
+              value: "true"
+            - name: GF_AUTH_ANONYMOUS_ORG_ROLE
+              value: Viewer
+            - name: GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH
+              value: /var/lib/grafana/dashboards/support-rag.json
+          ports:
+            - containerPort: 3000
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { memory: 512Mi }
+          volumeMounts:
+            - name: provisioning
+              mountPath: /etc/grafana/provisioning/datasources/datasources.yaml
+              subPath: datasources.yaml
+            - name: provisioning
+              mountPath: /etc/grafana/provisioning/dashboards/dashboards.yaml
+              subPath: dashboards.yaml
+            - name: dashboards
+              mountPath: /var/lib/grafana/dashboards
+      volumes:
+        - name: provisioning
+          configMap:
+            name: grafana-provisioning
+        - name: dashboards
+          configMap:
+            name: grafana-dashboards
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  labels: {{- include "rag.labels" . | nindent 4 }}
+spec:
+  type: NodePort
+  selector: {{- include "rag.selector" "grafana" | nindent 4 }}
+  ports:
+    - port: 3000
+      nodePort: {{ $o.grafana.nodePort }}
+{{- end }}

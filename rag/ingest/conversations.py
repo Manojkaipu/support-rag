@@ -205,8 +205,14 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--csv", default="twcs.csv")
     ap.add_argument("--skip-db", action="store_true")
+    ap.add_argument("--from-parquet", action="store_true",
+                    help="load Postgres from parquet files already in data_dir (e.g. in a cluster)")
     a = ap.parse_args()
-    frames = build(a.csv, settings.data_dir)
+    d = settings.data_dir
+    if a.from_parquet:
+        frames = [pd.read_parquet(d / f"{t}.parquet") for t in ("companies", "conversations", "tweets", "chunks")]
+    else:
+        frames = build(a.csv, d)
     if not a.skip_db:
         load_db(*frames)
 

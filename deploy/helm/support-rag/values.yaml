@@ -1,0 +1,44 @@
+images:
+  api: support-rag-api:dev
+  web: support-rag-web:dev
+  pullPolicy: IfNotPresent  # images are side-loaded with `kind load docker-image`
+
+# Directory on the node holding the indexes and parquet files (data/ from the ingest step).
+data:
+  hostPath: /data
+
+anthropic:
+  existingSecret: anthropic  # kubectl create secret generic anthropic --from-literal=ANTHROPIC_API_KEY=...
+  agentModel: claude-opus-5
+  verifierModel: claude-opus-5
+
+postgres:
+  image: postgres:18
+  user: rag
+  database: support
+  storage: 5Gi
+
+api:
+  replicas: 1
+  resources:
+    requests: { cpu: 500m, memory: 3Gi }
+    limits: { memory: 5Gi }
+
+web:
+  replicas: 1
+  nodePort: 30080
+
+ingest:
+  enabled: true  # post-install Job that loads Postgres from the parquet files
+
+observability:
+  enabled: true
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    nodePort: 30900
+  grafana:
+    image: grafana/grafana:12.1.1
+    nodePort: 30300
+  jaeger:
+    image: jaegertracing/jaeger:2.10.0
+    nodePort: 30686

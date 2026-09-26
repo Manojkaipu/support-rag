@@ -1,0 +1,37 @@
+{{- if .Values.ingest.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: load-corpus
+  labels: {{- include "rag.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: Never
+      initContainers:
+        - name: wait-for-postgres
+          image: {{ .Values.postgres.image }}
+          command: ["sh", "-c", "until pg_isready -h postgres -U {{ .Values.postgres.user }}; do sleep 2; done"]
+      containers:
+        - name: load
+          image: {{ .Values.images.api }}
+          imagePullPolicy: {{ .Values.images.pullPolicy }}
+          command: ["python", "-m", "rag.ingest.conversations", "--from-parquet"]
+          env:
+            {{- include "rag.dbEnv" . | nindent 12 }}
+          resources:
+            requests: { cpu: 500m, memory: 2Gi }
+          volumeMounts:
+            - name: data
+              mountPath: /data
+              readOnly: true
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: rag-data
+            readOnly: true
+{{- end }}
