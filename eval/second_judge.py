@@ -5,8 +5,8 @@ rubric and the same conversation text, then measures how often the two agree.
 Writes results/judge2.jsonl, results/judge_agreement.md, and eval/grading_sheet.md +
 eval/human_grades.jsonl: 10 answers for hand grading, disagreements first.
 
-    python eval/second_judge.py            # grade (resumable) + agreement + hand-grading sample
-    python eval/second_judge.py --report   # agreement + sample only, no API calls
+    python -m eval.second_judge            # grade (resumable) + agreement + hand-grading sample
+    python -m eval.second_judge --report   # agreement + sample only, no API calls
 """
 import argparse
 import asyncio
@@ -28,8 +28,10 @@ ANSWERS, JUDGE2 = OUT / "answers.jsonl", OUT / "judge2.jsonl"
 async def grade_all(concurrency: int):
     rows = [json.loads(line) for line in ANSWERS.read_text().splitlines()]
     done = {json.loads(line)["id"] for line in JUDGE2.read_text().splitlines()} if JUDGE2.exists() else set()
+    import openai
+
     engine, sessionmaker = make_db()
-    llm = OpenAILLM("", [])
+    llm = OpenAILLM("", [], client=openai.AsyncOpenAI(api_key=settings.openai_api_key, max_retries=8))
     sem = asyncio.Semaphore(concurrency)
 
     async def one(row):
@@ -37,8 +39,15 @@ async def grade_all(concurrency: int):
             if row["answer"] is None:
                 return {"id": row["id"], "grade": None, "cost_usd": 0.0}
             prompt = await judge_prompt(lambda cid: load_conversation(sessionmaker, cid), row)
-            data, turn = await llm.structured(settings.second_judge_model, "medium", JUDGE_PROMPT, prompt,
-                                              GRADE_SCHEMA)
+            for attempt in range(6):  # new accounts have low tokens-per-minute limits
+                try:
+                    data, turn = await llm.structured(settings.second_judge_model, "medium", JUDGE_PROMPT,
+                                                      prompt, GRADE_SCHEMA)
+                    break
+                except openai.RateLimitError:
+                    if attempt == 5:
+                        raise
+                    await asyncio.sleep(15 * (attempt + 1))
             if data is not None and validate(data, GRADE_SCHEMA):
                 data = None
             print(f"{row['id']} {'ok' if data else 'NO GRADE'} ${turn.cost_usd:.4f}", flush=True)
@@ -90,7 +99,7 @@ def report(n_human: int = 10, seed: int = 0):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--report", action="store_true", help="skip grading, only report")
-    ap.add_argument("--concurrency", type=int, default=6)
+    ap.add_argument("--concurrency", type=int, default=2)
     ap.add_argument("--n-human", type=int, default=10)
     a = ap.parse_args()
     if not a.report:
