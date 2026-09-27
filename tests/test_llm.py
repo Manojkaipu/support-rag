@@ -123,6 +123,19 @@ def test_last_turn_is_told_to_submit(make_agent, monkeypatch):
     assert [e for e in events if e.type == "answer"][0].data["verified"]
 
 
+def test_rejected_last_turn_answer_is_returned_unverified(make_agent, monkeypatch):
+    import rag.agent as agent_mod
+
+    monkeypatch.setattr(agent_mod.settings, "max_agent_turns", 2)
+    client = FakeXai([resp("r1", call("c1", "search_conversations", {"query": "q", "company": "any"})),
+                      resp("r2", submit("c2"))],
+                     [verdict(False, ["an unsupported claim"])])
+    events = run(make_agent(client, XaiLLM))
+    assert "error" not in [e.type for e in events]
+    final = [e for e in events if e.type == "answer"][0].data
+    assert final["verified"] is False and final["verification"]["unsupported_claims"] == ["an unsupported claim"]
+
+
 def test_xai_incomplete_response_stops(make_agent):
     client = FakeXai([resp("r1", message("partial"), status="incomplete")])
     events = run(make_agent(client, XaiLLM))

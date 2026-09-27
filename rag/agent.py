@@ -280,7 +280,8 @@ class Agent:
                     continue
                 verdict = info["verdict"]
                 yield Event("verification", {"attempt": retries + 1, **verdict})
-                if verdict["supported"] or retries >= settings.max_answer_retries:
+                last_turn = turn_no == settings.max_agent_turns  # no turn left to revise: show it, flagged
+                if verdict["supported"] or retries >= settings.max_answer_retries or last_turn:
                     final = {**c.input, "verified": verdict["supported"], "verification": verdict}
                     results.append((c.id, "Accepted.", False))
                 else:

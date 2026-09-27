@@ -27,8 +27,8 @@ The last row combines the two judges in the way my hand grades favoured (see [Ju
 
 | cause | count | detail |
 |---|---|---|
-| ran out of turns | 2 | It found the source both times. The verifier rejected a submission made on the last turn, and the loop dropped it instead of returning it as unverified. **A bug in the loop.** |
-| retrieval miss | 1 | vecsearch's BM25 tokenizer drops one-character tokens, so "Level 3" was searched as "level". The agent never found the source and concluded Comcast hadn't named a cause. **A bug in the tokenizer.** |
+| ran out of turns | 2 | It found the source both times. The verifier rejected a submission made on the last turn, and the loop dropped it instead of returning it as unverified. **A bug in the loop, since fixed.** |
+| retrieval miss | 1 | Only one of the 16 Comcast conversations about the "Level 3" outage has an agent naming it as the cause. The agent never reached it and concluded Comcast hadn't named one. Along the way this exposed a real bug: vecsearch's BM25 tokenizer dropped one-character tokens, so "Level 3" was searched as "level". **Fixed:** the source moves from rank 46 to 21 for a "Level 3 outage" search, which is still outside the 8 results the agent reads. |
 | overgeneralized | 1 | Said Safaricom calls only from one number; agents also mention a second one used during promotions. |
 | missed part of the reference | 2 | Grounded answers without a secondary point from the reference. The two judges disagree on whether that counts as a failure. |
 
@@ -38,12 +38,12 @@ Is the conversation a question was written from in the top k? Conversation-level
 
 | search | hit@1 | hit@5 | hit@10 | MRR | p50 latency |
 |---|---|---|---|---|---|
-| BM25 | 0.26 | 0.42 | 0.50 | 0.33 | 6.2 ms |
-| vector | 0.31 | 0.48 | 0.55 | 0.40 | 6.2 ms |
-| **hybrid (RRF)** | 0.30 | **0.53** | **0.65** | **0.41** | 16.5 ms |
-| hybrid + company filter | 0.31 | 0.55 | 0.65 | 0.42 | 8.4 ms |
+| BM25 | 0.27 | 0.42 | 0.50 | 0.34 | 6.9 ms |
+| vector | 0.31 | 0.48 | 0.55 | 0.40 | 6.6 ms |
+| **hybrid (RRF)** | 0.29 | **0.53** | **0.66** | **0.40** | 17.8 ms |
+| hybrid + company filter | 0.33 | 0.55 | 0.66 | 0.42 | 10.2 ms |
 
-Latency includes embedding the query. These are lower bounds, since other conversations often give the same answer. In the answer run, the agent found the source conversation for 71% of questions but answered 91% correctly.
+These are with the BM25 tokenizer fix; before it, hybrid hit@10 was 0.65. Latency includes embedding the query and was measured on an otherwise idle machine. The numbers are lower bounds, since other conversations often give the same answer. In the answer run, the agent found the source conversation for 71% of questions but answered 91% correctly.
 
 A company filter is applied inside the index rather than to its results. [vecsearch's README](https://github.com/Manojkaipu/vecsearch#filtered-and-hybrid-search) has the benchmark by filter selectivity. Post-filtering loses up to 19% recall on small companies; filtering inside the graph plus an exact scan below 5,000 allowed chunks keeps recall ≥ 0.975.
 
@@ -167,4 +167,5 @@ Mistakes along the way, each caught by a check rather than noticed later:
 - Many company replies are just "DM us" or a link; the text behind shortened links isn't in the dataset, so the system can only report what the tweets themselves say.
 - Everything is from late 2017. The agent is told to say so when an answer may have changed.
 - Slow: a median of 130 s per question with Grok at high reasoning effort. Lower effort is the obvious next experiment, measured against this baseline.
-- Open fixes, found by the evaluation: keep one-character tokens in BM25, return a last-turn answer the verifier rejects as unverified instead of dropping it, and stop the agent adding uncited commentary.
+- Two bugs found by the evaluation were fixed after the baseline run: BM25 now keeps one-character tokens, and a last-turn answer the verifier rejects is returned as unverified. The retrieval numbers above include the tokenizer fix; the answer numbers are from the baseline and haven't been re-measured.
+- Still open: the agent adds uncited commentary, which is the main reason answers fail the strict grounding rule. Changing the prompt to fix that would be tuning on the test set, so it needs new questions to measure it fairly.
