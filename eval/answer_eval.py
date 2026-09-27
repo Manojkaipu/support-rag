@@ -94,20 +94,28 @@ async def run_one(agent: Agent, q: dict) -> dict:
             "steps": steps, "started": started, "finished": time.time()}
 
 
-async def judge(agent: Agent, row: dict) -> tuple[dict, float]:
+async def judge_prompt(get_conversation, row: dict) -> str:
+    """What the judge sees: question, reference, the system's answer and the full cited conversations.
+    Shared by both judges so they grade from identical text."""
     a = row["answer"]
-    if a is None:
-        return {"grounded": False, "correct": False, "abstained": False, "failure_mode": "agent_error",
-                "rationale": row["error"] or "no answer"}, 0.0
     docs = []
     for cid in a["cited_conversation_ids"]:
         try:
-            docs.append((await agent.get_conversation(cid))[0])
+            docs.append((await get_conversation(cid))[0])
         except LookupError:
             docs.append(f"Conversation #{cid} doesn't exist.")
-    prompt = (f"Question: {row['question']}\nAnswerable from the history: {row['answerable']}\n"
-              f"Reference answer: {row['reference_answer']}\n\nSystem answer:\n{a['answer']}\n\n"
-              "Cited conversations:\n\n" + ("\n\n---\n\n".join(docs) or "(none)"))
+    return (f"Question: {row['question']}\nAnswerable from the history: {row['answerable']}\n"
+            f"Reference answer: {row['reference_answer']}\n\nSystem answer:\n{a['answer']}\n\n"
+            "Cited conversations:\n\n" + ("\n\n---\n\n".join(docs) or "(none)"))
+
+
+NO_ANSWER_GRADE = {"grounded": False, "correct": False, "abstained": False, "failure_mode": "agent_error"}
+
+
+async def judge(agent: Agent, row: dict) -> tuple[dict, float]:
+    if row["answer"] is None:
+        return {**NO_ANSWER_GRADE, "rationale": row["error"] or "no answer"}, 0.0
+    prompt = await judge_prompt(agent.get_conversation, row)
     grade, turn = await agent.structured("judge", settings.judge_model, "medium", JUDGE_PROMPT, prompt, GRADE_SCHEMA)
     if grade is None:
         return {"grounded": False, "correct": False, "abstained": False, "failure_mode": "judge_error",

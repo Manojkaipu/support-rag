@@ -12,9 +12,12 @@ PRICES = {
     "claude-haiku-4-5": (1.00, 5.00, 0.10, 1.25),
     "grok-4.7": (2.00, 6.00, 0.50, 2.00),  # prompts under 200k tokens
     "grok-4.3": (1.25, 2.50, 0.20, 1.25),
+    "gpt-6-astra": (10.00, 50.00, 1.00, 10.00),
+    "gpt-6-sol": (2.00, 10.00, 0.20, 2.00),
+    "gpt-6-luna": (0.10, 0.50, 0.01, 0.10),
 }
 
-DEFAULT_MODELS = {"anthropic": "claude-opus-5", "xai": "grok-4.7"}
+DEFAULT_MODELS = {"anthropic": "claude-opus-5", "xai": "grok-4.7", "openai": "gpt-6-sol"}
 
 
 class Settings(BaseSettings):
@@ -24,8 +27,10 @@ class Settings(BaseSettings):
     data_dir: Path = Path("data")
     embed_model: str = "sentence-transformers/all-MiniLM-L6-v2"
 
-    llm_provider: str = "xai"  # xai | anthropic
+    llm_provider: str = "xai"  # xai | anthropic | openai
     xai_api_key: str | None = None  # Anthropic's SDK reads ANTHROPIC_API_KEY itself
+    openai_api_key: str | None = None
+    second_judge_model: str = "gpt-6-sol"  # independent judge (OpenAI) for eval/second_judge.py
     agent_model: str | None = None  # default: the provider's model in DEFAULT_MODELS
     verifier_model: str | None = None
     judge_model: str | None = None

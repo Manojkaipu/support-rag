@@ -1,10 +1,14 @@
-"""Checks the LLM judge against human grades.
+"""Checks the LLM judges against human grades.
 
-1. `python eval/judge_agreement.py sample` picks 20 graded answers (stratified so
-   failures are represented) and writes eval/human_grades.jsonl with the judge's
-   labels hidden. Fill in grounded / correct / abstained for each by hand.
-2. `python eval/judge_agreement.py score` compares your labels with the judge's:
-   raw agreement and Cohen's kappa per dimension, plus every disagreement.
+The hand-grading sample is written by eval/second_judge.py (answers the two judges
+disagree on come first); `sample` here draws a plain stratified sample instead.
+Fill in grounded / correct / abstained for each item in eval/human_grades.jsonl,
+reading eval/grading_sheet.md, then:
+
+    python eval/judge_agreement.py score
+
+compares your labels with each judge: agreement and Cohen's kappa per dimension,
+plus every disagreement. Results go to results/human_agreement.md.
 """
 import json
 import random
@@ -13,6 +17,7 @@ from pathlib import Path
 
 EVAL = Path(__file__).parent
 ANSWERS = Path("results/answers.jsonl")
+JUDGE2 = Path("results/judge2.jsonl")
 HUMAN = EVAL / "human_grades.jsonl"
 SHEET = EVAL / "grading_sheet.md"
 DIMS = ("grounded", "correct", "abstained")
@@ -27,6 +32,11 @@ def sample(n=20, seed=0):
     k = min(len(fails), n // 2)
     picked = rng.sample(fails, k) + rng.sample(passes, min(len(passes), n - k))
     rng.shuffle(picked)
+    write_items(picked)
+
+
+def write_items(picked):
+    """eval/human_grades.jsonl (labels to fill in, judges' verdicts hidden) and a readable sheet."""
     with HUMAN.open("w") as f:
         for r in picked:
             f.write(json.dumps({"id": r["id"], "question": r["question"], "reference_answer": r["reference_answer"],
@@ -72,19 +82,26 @@ def kappa(a, b):
 def score():
     human = [json.loads(line) for line in HUMAN.read_text().splitlines()]
     human = [h for h in human if all(h[d] is not None for d in DIMS)]
-    judge = {r["id"]: r["grade"] for r in map(json.loads, ANSWERS.read_text().splitlines())}
-    print(f"{len(human)} hand-graded answers\n")
-    print("| dimension | agreement | Cohen's kappa |\n|---|---|---|")
-    for d in DIMS:
-        h = [bool(x[d]) for x in human]
-        j = [bool(judge[x["id"]][d]) for x in human]
-        agree = sum(x == y for x, y in zip(h, j)) / len(h)
-        print(f"| {d} | {agree:.0%} | {kappa(h, j):.2f} |")
-    print("\nDisagreements:")
-    for x in human:
-        diff = [d for d in DIMS if bool(x[d]) != bool(judge[x["id"]][d])]
-        if diff:
-            print(f"- {x['id']} {diff}: judge said {judge[x['id']]['rationale']!r}; notes: {x['notes']!r}")
+    judges = {"first judge (Grok)": {r["id"]: r["grade"] for r in map(json.loads, ANSWERS.read_text().splitlines())}}
+    if JUDGE2.exists():
+        judges["second judge (OpenAI)"] = {r["id"]: r["grade"] for r in map(json.loads, JUDGE2.read_text().splitlines())
+                                           if r["grade"]}
+    lines = [f"{len(human)} hand-graded answers (answers the judges disagreed on were sampled first).", ""]
+    for name, grades in judges.items():
+        items = [x for x in human if x["id"] in grades]
+        lines += [f"### Human vs {name}", "", "| dimension | agreement | Cohen's kappa |", "|---|---|---|"]
+        for d in DIMS:
+            h = [bool(x[d]) for x in items]
+            j = [bool(grades[x["id"]][d]) for x in items]
+            lines.append(f"| {d} | {sum(x == y for x, y in zip(h, j)) / len(h):.0%} | {kappa(h, j):.2f} |")
+        lines += ["", "Disagreements:"]
+        for x in items:
+            diff = [d for d in DIMS if bool(x[d]) != bool(grades[x["id"]][d])]
+            if diff:
+                lines.append(f"- {x['id']} {diff}: judge said {grades[x['id']]['rationale']!r}; notes: {x['notes']!r}")
+        lines.append("")
+    Path("results/human_agreement.md").write_text("\n".join(lines))
+    print("\n".join(lines))
 
 
 if __name__ == "__main__":

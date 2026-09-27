@@ -131,6 +131,19 @@ The note that information is from 2017 needs no support. List each unsupported c
 say briefly how to fix the answer."""
 
 
+async def load_conversation(sessionmaker, conversation_id: int) -> tuple[str, dict]:
+    """A conversation as the agent (and the judges) read it: one line per turn with its timestamp."""
+    async with sessionmaker() as s:
+        conv = await s.scalar(select(Conversation).where(Conversation.id == conversation_id)
+                              .options(selectinload(Conversation.tweets), selectinload(Conversation.company)))
+    if conv is None:
+        raise LookupError(f"conversation {conversation_id} doesn't exist")
+    lines = [f"Conversation #{conv.id} · {conv.company.handle} · {conv.started_at:%Y-%m-%d}"]
+    for t, line in zip(conv.tweets, conv.text.split("\n")):
+        lines.append(f"[{t.created_at:%Y-%m-%d %H:%M}] {line}")
+    return "\n".join(lines), {"conversation_id": conv.id, "company": conv.company.handle, "turns": conv.n_turns}
+
+
 class Agent:
     def __init__(self, retriever: Retriever, sessionmaker, llm=None):
         self.retriever = retriever
@@ -152,15 +165,7 @@ class Agent:
         return text, rows
 
     async def get_conversation(self, conversation_id: int) -> tuple[str, dict]:
-        async with self.sessionmaker() as s:
-            conv = await s.scalar(select(Conversation).where(Conversation.id == conversation_id)
-                                  .options(selectinload(Conversation.tweets), selectinload(Conversation.company)))
-        if conv is None:
-            raise LookupError(f"conversation {conversation_id} doesn't exist")
-        lines = [f"Conversation #{conv.id} · {conv.company.handle} · {conv.started_at:%Y-%m-%d}"]
-        for t, line in zip(conv.tweets, conv.text.split("\n")):
-            lines.append(f"[{t.created_at:%Y-%m-%d %H:%M}] {line}")
-        return "\n".join(lines), {"conversation_id": conv.id, "company": conv.company.handle, "turns": conv.n_turns}
+        return await load_conversation(self.sessionmaker, conversation_id)
 
     # ---- model calls -------------------------------------------------------
 

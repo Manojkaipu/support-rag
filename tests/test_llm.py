@@ -129,6 +129,23 @@ def test_xai_incomplete_response_stops(make_agent):
     assert [e.type for e in events] == ["error", "usage"] and events[0].data["reason"] == "max_tokens"
 
 
+def test_openai_backend_prices_from_table():
+    import asyncio
+
+    from rag.llm import OpenAILLM
+
+    reply = NS(id="o1", status="completed", model="gpt-6-sol",
+               output=[message(json.dumps({"supported": True, "unsupported_claims": [], "feedback": ""}))],
+               usage=NS(input_tokens=2000, output_tokens=500, input_tokens_details=NS(cached_tokens=0),
+                        output_tokens_details=NS(reasoning_tokens=300)))  # no cost_in_usd_ticks on OpenAI
+    client = FakeXai([], [reply])
+    llm = OpenAILLM("", [], client=client)
+    data, turn = asyncio.run(llm.structured("gpt-6-sol", "medium", "sys", "prompt",
+                                            {"type": "object", "properties": {}}))
+    assert data["supported"] is True
+    assert abs(turn.cost_usd - (2000 * 2.00 + 500 * 10.00) / 1e6) < 1e-12
+
+
 def test_validate():
     schema = {"type": "object", "additionalProperties": False, "required": ["a", "b"],
               "properties": {"a": {"type": "integer"}, "b": {"type": "array", "items": {"type": "string"}},

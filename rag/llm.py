@@ -10,9 +10,10 @@ The agent, verifier and judge only see:
 Tools are given once, provider-neutral: {"name", "description", "schema"}.
 
 AnthropicLLM uses the Messages API (strict tools, adaptive thinking, prompt
-caching, server-side refusal fallback). XaiLLM uses xAI's Responses API through
-the OpenAI SDK, chains turns with previous_response_id, and takes the billed
-cost from usage.cost_in_usd_ticks.
+caching, server-side refusal fallback). ResponsesLLM uses the Responses API
+through the OpenAI SDK and chains turns with previous_response_id; XaiLLM points
+it at xAI and takes the billed cost from usage.cost_in_usd_ticks, OpenAILLM
+points it at OpenAI (cost from the price table).
 """
 import json
 from dataclasses import dataclass, field
@@ -112,19 +113,24 @@ class AnthropicLLM:
         return json.loads(turn.text[0]), turn
 
 
-class XaiLLM:
-    BASE_URL = "https://api.x.ai/v1"
+class ResponsesLLM:
+    """Responses API through the OpenAI SDK. xAI serves the same API at its own base URL."""
+    BASE_URL = None  # the SDK's default (OpenAI)
 
     def __init__(self, system: str, tools: list[dict], client=None):
         if client is None:
             import openai
 
-            client = openai.AsyncOpenAI(api_key=settings.xai_api_key, base_url=self.BASE_URL)
+            client = openai.AsyncOpenAI(api_key=self.api_key(), base_url=self.BASE_URL)
         self.client = client
         self.system = system
-        # xAI's docs don't document strict tool schemas, so inputs are validated by the caller.
+        # Tool inputs are validated by the caller (xAI doesn't document strict tool schemas).
         self.tools = [{"type": "function", "name": t["name"], "description": t["description"],
                        "parameters": t["schema"]} for t in tools]
+
+    @staticmethod
+    def api_key():
+        return settings.openai_api_key
 
     def start(self, question: str):
         # Server-side state: each request sends only new input items plus previous_response_id.
@@ -182,11 +188,25 @@ class XaiLLM:
         return json.loads(turn.text[0]), turn
 
 
+class XaiLLM(ResponsesLLM):
+    BASE_URL = "https://api.x.ai/v1"
+
+    @staticmethod
+    def api_key():
+        return settings.xai_api_key
+
+
+class OpenAILLM(ResponsesLLM):
+    pass
+
+
 def make_llm(system: str, tools: list[dict]):
     if settings.llm_provider == "anthropic":
         return AnthropicLLM(system, tools)
     if settings.llm_provider == "xai":
         return XaiLLM(system, tools)
+    if settings.llm_provider == "openai":
+        return OpenAILLM(system, tools)
     raise ValueError(f"unknown llm_provider {settings.llm_provider!r}")
 
 
