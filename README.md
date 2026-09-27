@@ -4,6 +4,8 @@ Question answering over ~800k real customer-support conversations (Twitter, 2017
 
 Retrieval runs on [vecsearch](https://github.com/Manojkaipu/vecsearch), my C++ HNSW library, extended here with a BM25 index, filtered graph search and reciprocal rank fusion.
 
+[![CI](https://github.com/Manojkaipu/support-rag/actions/workflows/ci.yml/badge.svg)](https://github.com/Manojkaipu/support-rag/actions/workflows/ci.yml)
+
 ## Results
 
 96 hand-reviewed questions: 86 answerable, spread over 30 companies, and 10 that the history can't answer. The agent and the verifier are `grok-4.7` at high reasoning effort.
