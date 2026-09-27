@@ -139,7 +139,7 @@ def summarize(rows: list[dict]) -> str:
         f"| wrongly abstained (answerable) | {pct(ans, lambda r: r['grade']['abstained'])} |",
         f"| gold conversation retrieved (answerable) | {pct(ans, lambda r: bool(set(r['gold']) & set(r['retrieved'])))} |",
         f"| gold conversation cited (answerable) | {pct(ans, lambda r: bool(r['answer'] and set(r['gold']) & set(r['answer']['cited_conversation_ids'])))} |",
-        f"| verifier accepted first draft | {pct([r for r in rows if r['answer']], lambda r: r['answer']['verified'])} |",
+        f"| passed the verifier (after up to 2 revisions) | {pct([r for r in rows if r['answer']], lambda r: r['answer']['verified'])} |",
         f"| agent cost | ${cost:.2f} total, ${cost / max(n, 1):.3f} per question |",
         f"| judge cost | ${sum(r['judge_cost'] for r in rows):.2f} |",
         f"| latency p50 / p90 | {lat[len(lat) // 2]:.1f}s / {lat[int(len(lat) * 0.9)]:.1f}s |" if lat else "",
@@ -192,6 +192,12 @@ async def main_async(args):
     await engine.dispose()
 
 
+def resummarize(name: str):
+    """Rewrites results/<name>.md from results/<name>.jsonl without re-running anything."""
+    rows = [json.loads(line) for line in (OUT / f"{name}.jsonl").read_text().splitlines()]
+    (OUT / f"{name}.md").write_text(summarize(sorted(rows, key=lambda r: r["id"])))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=0)
@@ -199,8 +205,14 @@ def main():
     ap.add_argument("--out", default="answers", help="results/<out>.jsonl and results/<out>.md")
     ap.add_argument("--allow-unreviewed", action="store_true")
     ap.add_argument("--concurrency", type=int, default=4)
-    ap.add_argument("--resume", action="store_true", help="skip questions already in results/answers.jsonl")
-    asyncio.run(main_async(ap.parse_args()))
+    ap.add_argument("--resume", action="store_true", help="skip questions already in results/<out>.jsonl")
+    ap.add_argument("--summarize-only", action="store_true", help="rebuild the .md from the existing .jsonl")
+    a = ap.parse_args()
+    if a.summarize_only:
+        resummarize(a.out)
+        print((OUT / f"{a.out}.md").read_text())
+        return
+    asyncio.run(main_async(a))
 
 
 if __name__ == "__main__":

@@ -25,6 +25,7 @@ def test_summary_counts():
     assert "| gold conversation retrieved (answerable) | 67% (2/3) |" in s
     assert "| gold conversation cited (answerable) | 33% (1/3) |" in s
     assert "| agent cost | $0.40 total, $0.100 per question |" in s
+    assert "| passed the verifier (after up to 2 revisions) | 75% (3/4) |" in s
     assert "| retrieval_miss | 1 |" in s and "| none | 2 |" in s
 
 

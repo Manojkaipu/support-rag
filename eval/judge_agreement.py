@@ -14,6 +14,7 @@ from pathlib import Path
 EVAL = Path(__file__).parent
 ANSWERS = Path("results/answers.jsonl")
 HUMAN = EVAL / "human_grades.jsonl"
+SHEET = EVAL / "grading_sheet.md"
 DIMS = ("grounded", "correct", "abstained")
 
 
@@ -32,7 +33,32 @@ def sample(n=20, seed=0):
                                 "answer": r["answer"]["answer"], "cited": r["answer"]["cited_conversation_ids"],
                                 "grounded": None, "correct": None, "abstained": None, "notes": ""},
                                ensure_ascii=False) + "\n")
-    print(f"wrote {len(picked)} items to {HUMAN}; open the cited conversations in the UI to grade them")
+    write_sheet(picked)
+    print(f"wrote {len(picked)} items to {HUMAN} and a reading copy to {SHEET}")
+
+
+def write_sheet(picked):
+    """Markdown copy of the items with the cited conversations inlined, for reading while grading."""
+    import pandas as pd
+
+    conv = pd.read_parquet("data/conversations.parquet", columns=["id", "text"]).set_index("id")["text"]
+    out = ["# Hand grading", "",
+           "For each answer, judge only from the cited conversations (and the reference answer):",
+           "- **grounded**: every factual claim is said (or fairly paraphrased) by a company agent in a cited conversation",
+           "- **correct**: it conveys the reference answer's main point (for unanswerable questions: it declined)",
+           "- **abstained**: it says the history doesn't answer the question",
+           "",
+           "Record true/false for each in eval/human_grades.jsonl (the item with the same id), plus notes.", ""]
+    for r in picked:
+        a = r["answer"]
+        out += [f"## {r['id']}", "", f"**Question:** {r['question']}", "",
+                f"**Reference:** {r['reference_answer']}", "", "**System answer:**", "", a["answer"], ""]
+        for cid in a["cited_conversation_ids"]:
+            out += [f"<details><summary>cited conversation #{cid}</summary>", "", "```",
+                    conv.get(cid, "(missing)"), "```", "</details>", ""]
+        if not a["cited_conversation_ids"]:
+            out += ["_(no conversations cited)_", ""]
+    SHEET.write_text("\n".join(out))
 
 
 def kappa(a, b):
