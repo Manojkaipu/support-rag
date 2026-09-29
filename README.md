@@ -149,19 +149,35 @@ The chart runs Postgres, the API (indexes mounted read-only from the node), the 
 
 ## How I used AI tools
 
-Claude (via Claude Code) wrote most of the code in this repo and in vecsearch's BM25 and filtered search, drafted the evaluation questions, and ran the pipeline and the evaluations on my laptop.
+I used Claude (via Claude Code) for:
+* most of the code: this repo, plus the BM25 index, filtered search and rank fusion added to vecsearch
+* the FastAPI/SQLAlchemy/Next.js/Helm boilerplate and the OpenTelemetry, Prometheus and Grafana wiring
+* drafting the 100 evaluation questions from a seeded sample of real conversations
+* running the ingest, the 3-hour embedding job, the evaluations and the kind cluster on my Windows laptop under WSL2
+* writing this README from the result files
 
-My part:
-* the plan and scope, and the choice of models and budgets;
-* reviewing all 100 questions against their source conversations (4 rejected);
-* setting the grading rules and grading 10 answers by hand.
+Decisions I made:
+* the plan and scope, including an evaluation that measures failures rather than a demo
+* Grok for the agent, verifier and judge to fit the budget, with an OpenAI model as a second judge so no model family grades only itself
+* reviewing all 100 questions against their source conversations and rejecting 4
+* the grading rules. I graded 10 answers by hand, then chose how to combine the two judges.
+* not tuning the prompt on these questions after seeing the results
 
-Mistakes along the way, each caught by a check rather than noticed later:
+Mistakes it made, found by reviewing its work afterwards:
 * **Merged conversations.** Reply-link threading merged unrelated customers under broadcast tweets into 1,000-turn "conversations". A spot check of the loaded data caught it before the 3-hour embedding run.
 * **Garbage filter mask.** The Python binding treated an empty array as a filter, so unfiltered searches read a garbage mask. An existing recall test dropped to 0.60 and caught it.
-* **Guessed threshold.** The exact-scan threshold was first guessed at 20,000 allowed chunks. The filter benchmark put it at 5,000.
-* **Aborted first run.** The first full evaluation used an 8-turn cap that was too tight for Grok, and it read a copy of the question file whose review status had been reset. I stopped it after 15 questions ($1.46; kept in `results/aborted_run_8turns.jsonl`). The eval now refuses to run on unreviewed questions.
-* **API crash on restart.** The API crashed on startup when Postgres wasn't reachable yet after a node restart. It now waits for it.
+* **Guessed threshold.** It first guessed the exact-scan threshold at 20,000 allowed chunks. The filter benchmark put it at 5,000.
+* **Destructive re-ingest.** Re-running ingest would have dropped every table, including the stored run history. It now drops only the corpus tables.
+* **Aborted first run.** The first full evaluation used an 8-turn cap that was too tight for Grok. It also read a copy of the question file whose review status had been reset. I stopped it after 15 questions ($1.46; kept in `results/aborted_run_8turns.jsonl`). The eval now refuses to run on unreviewed questions.
+* **Wrong diagnosis.** It blamed the one retrieval miss on the tokenizer bug. After the fix, the source only moved from rank 46 to 21; the real cause is that 1 of 16 similar conversations has the answer.
+* **Startup crashes.** The API crashed when Postgres wasn't reachable yet after a node restart; it now waits. After the switch to Grok, a redeploy crashed because the cluster had no key for the new provider.
+
+Checks I rely on:
+* Every question was reviewed by me against the conversation it came from.
+* Every answer is graded by two judges from different model families, and a hand check shows where each one is wrong.
+* Every failed answer is read, not just counted. That's how both bugs above were found.
+* Every number in this README was checked against `results/`.
+* Python tests and CI (tests, web build, Helm lint, image builds) must pass before a result is trusted, and vecsearch's own C++ tests and recall checks run in its CI.
 
 ## Limitations
 
