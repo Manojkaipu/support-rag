@@ -52,6 +52,12 @@ function StepRow({ step }: { step: Step }) {
       );
     case "error":
       return <div className="step verify bad">Stopped: {step.reason}</div>;
+    default: {
+      // Exhaustiveness check: once every kind is handled above, `step` is `never` here. Adding a
+      // kind to Step without a case for it makes this assignment a type error.
+      const unhandled: never = step;
+      return unhandled;
+    }
   }
 }
 
